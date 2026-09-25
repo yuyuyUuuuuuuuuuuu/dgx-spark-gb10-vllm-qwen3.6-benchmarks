@@ -1,0 +1,85 @@
+services:
+  vllm-dflash-official:
+    # ============================================================================
+    # イメージ作者(AEON-7)の公式レシピに準拠した版
+    # ----------------------------------------------------------------------------
+    # 背景: コミュニティ投稿(NeoAi)の構成(fp8_e4m3 + TRITON_ATTN, docker-compose.dflash-repro-v024.yml)は
+    #       GB10(sm121a)で profile_cudagraph_memory の AssertionError を出して起動しなかった。
+    #       そこで、作者が GB10 での動作を示している構成をそのまま使う。
+    # 結果: nvidia 公式 NVFP4 body + z-lab drafter の組み合わせでは、この構成でも
+    #       unify_kv_cache_spec_page_size の assert で起動しなかった(docker-compose.dflash-fixed.yml 参照)。
+    #
+    # 公式 aeon_official_compose.yml の command flags を踏襲し、変えたのは body / drafter / util / port の 4 点のみ。
+    #
+    # 公式が明記しているルール(aeon_official_compose.yml のコメントより):
+    #   - spec config に attention_backend キーを "入れない"(drafter は DEFAULT のまま)
+    #   - --kv-cache-dtype を "設定しない"(非因果 drafter が BF16 KV を要求)
+    #   - --enforce-eager は "不要"(FULL graphs で ~30% 速い)
+    #   - --attention-backend flash_attn(TRITON_ATTN でない)
+    #   - --quantization compressed-tensors
+    #
+    # 起動しなかった版(docker-compose.dflash-repro-v024.yml)との差分:
+    #     fp8 KV        → 指定なし(BF16 auto)
+    #     TRITON_ATTN   → flash_attn
+    #     spec attention_backend キー → 削除(drafter DEFAULT)
+    #   この 3 点が GB10 での profile_cudagraph_memory の assert の原因とみている。
+    # ============================================================================
+    image: ghcr.io/aeon-7/aeon-vllm-ultimate:2026-07-01-v0.24.0   # 投稿と同じ v0.24.0
+    container_name: vllm-dflash-official
+    entrypoint: ["vllm"]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - VLLM_NO_USAGE_STATS=1
+      - DO_NOT_TRACK=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - TORCH_CUDA_ARCH_LIST=12.1a
+      - CUTE_DSL_ARCH=sm_121a
+      - FLASHINFER_DISABLE_VERSION_CHECK=1
+      - HF_HOME=/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    volumes:
+      - ${HF_CACHE_DIR:-~/.cache/huggingface}:/root/.cache/huggingface   # nvidia 公式 NVFP4 body は HF キャッシュから
+      - ${MODELS_DIR:-~/models}:/models
+      - ${MODELS_DIR:-~/models}/Qwen3.6-35B-A3B-DFlash-zlab:/drafter:ro   # z-lab 版 drafter(771MB)
+      - ./.cache/flashinfer-dflash-official:/root/.cache/flashinfer
+      - ./.cache/vllm-dflash-official:/root/.cache/vllm
+    ports:
+      - "127.0.0.1:8001:8000"   # 8001。8000 のサーバと衝突しないように
+    ipc: host
+    ulimits:
+      memlock: {soft: -1, hard: -1}
+    command:
+      - serve
+      - nvidia/Qwen3.6-35B-A3B-NVFP4              # body: nvidia 公式 NVFP4(HF キャッシュ)。公式レシピは /models/qwen36 の heretic
+      - --served-model-name=Qwen/Qwen3.6-35B-A3B  # ベースラインと同じ served name
+      - --tensor-parallel-size=1
+      - --dtype=auto
+      - --quantization=compressed-tensors          # 公式値(modelopt ではない)
+      - --max-model-len=262144                     # 公式値
+      - --max-num-seqs=64
+      - --max-num-batched-tokens=32768             # 公式は 65536。util 0.44 なので抑えめ
+      - --gpu-memory-utilization=0.44              # ベースラインと同じ 0.44 に固定(公式は 0.70)
+      - --enable-chunked-prefill
+      - --enable-prefix-caching
+      - --load-format=safetensors
+      - --trust-remote-code
+      - --enable-auto-tool-choice
+      - --tool-call-parser=qwen3_coder
+      - --reasoning-parser=qwen3
+      - --host=0.0.0.0
+      - --port=8000
+      # spec config: attention_backend キーは入れない(公式の指示。drafter は DEFAULT)
+      - --speculative-config={"method":"dflash","model":"/drafter","num_speculative_tokens":11}
+      - --attention-backend=flash_attn             # TRITON_ATTN ではない(公式値)
+      # 公式は --kv-cache-dtype を設定しない(非因果 drafter が BF16 KV を要求)。ここでも指定しない。
+      #
+      # ---- フォールバック(まずは付けずに起動する) --------------------------------
+      #  1) profile_cudagraph_memory AssertionError が再発したら → --enforce-eager を追加
+      #     (cudagraph無効化)。ただし公式は「enforce-eager不要」と言うので初回は付けない。
+      #  2) compressed-tensors で body(nvidia 公式 NVFP4)がロードできない場合
+      #     → --quantization=compressed-tensors 行を削除して auto にフォールバック。
+      # ---------------------------------------------------------------------------
+    restart: "no"

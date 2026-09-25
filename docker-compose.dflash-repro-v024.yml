@@ -1,0 +1,75 @@
+services:
+  vllm-dflash-repro:
+    # ============================================================================
+    # GB10 のコミュニティ投稿(NeoAi, 単発 286.2 tok/s の報告)の再現を狙った構成。
+    # イメージ作者(AEON-7)の heretic README の推奨レシピ + 投稿のコマンドに準拠。
+    # 結果: 起動時に profile_cudagraph_memory の AssertionError で落ちた
+    #       (docker-compose.dflash-official.yml のコメント参照)。
+    # ホストのポート 8001 を使う(8000 のサーバと並べて起動できる)。
+    #
+    # 投稿との差分:
+    #   - model body       : 投稿は heretic の NVFP4 body。ここでは HF キャッシュにある
+    #                        nvidia/Qwen3.6-35B-A3B-NVFP4(nvidia 公式 NVFP4 body)を使う
+    #   - served-model-name: 投稿は heretic 名。ここではベースラインと同じ Qwen/Qwen3.6-35B-A3B
+    #   - drafter          : z-lab 版 DFlash drafter を ${MODELS_DIR}/Qwen3.6-35B-A3B-DFlash-zlab に置き /drafter にマウント
+    #   - max-num-seqs     : ベースラインと揃えて 8(投稿は 16。単発 tok/s の計測には関係しない)
+    #   それ以外(image tag v0.24.0 / util 0.44 / num_spec 11 / KV fp8_e4m3 /
+    #   TRITON_ATTN / max-model-len 229376 等)は投稿の値のまま。
+    # ============================================================================
+    image: ghcr.io/aeon-7/aeon-vllm-ultimate:2026-07-01-v0.24.0
+    container_name: vllm-dflash-repro
+    entrypoint: ["vllm"]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - VLLM_NO_USAGE_STATS=1
+      - DO_NOT_TRACK=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - TORCH_CUDA_ARCH_LIST=12.1a
+      - CUTE_DSL_ARCH=sm_121a
+      - FLASHINFER_DISABLE_VERSION_CHECK=1
+      - HF_HOME=/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    volumes:
+      - ${HF_CACHE_DIR:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ${MODELS_DIR:-~/models}:/models                      # 他の構成と同じパスも見えるようにしておく
+      - ${MODELS_DIR:-~/models}/Qwen3.6-35B-A3B-DFlash-zlab:/drafter:ro  # z-lab 版 draft
+      - ./.cache/flashinfer-dflash:/root/.cache/flashinfer
+      - ./.cache/vllm-dflash:/root/.cache/vllm
+    ports:
+      - "127.0.0.1:8001:8000"                 # 8001。8000 のサーバと衝突しないように
+    ipc: host
+    ulimits:
+      memlock: {soft: -1, hard: -1}
+    command:
+      - serve
+      - nvidia/Qwen3.6-35B-A3B-NVFP4
+      - --served-model-name=Qwen/Qwen3.6-35B-A3B
+      - --tensor-parallel-size=1
+      - --dtype=auto
+      # quantization: README は modelopt(NVFP4 modelopt body)を推奨。
+      #   ベースラインの compose では同じ body を quantization 未指定(自動検出)で動かしている。
+      #   modelopt 指定でロードに失敗したら、この 1 行を削除して自動検出に戻す。
+      - --quantization=modelopt
+      - --kv-cache-dtype=fp8_e4m3             # 投稿値のまま(v0.24.0 で GB10 を正式サポートとされる)
+      - --attention-backend=TRITON_ATTN       # target 側の backend
+      - --max-model-len=229376               # 投稿値。fp8 KV でも確保不可なら 131072 に下げる
+      - --max-num-seqs=8                       # ベースラインと揃える(投稿は 16)
+      - --max-num-batched-tokens=32768
+      - --gpu-memory-utilization=0.44          # ベースラインと同じ 0.44 に固定
+      - --enable-chunked-prefill
+      - --enable-prefix-caching
+      - --async-scheduling
+      - --reasoning-parser=qwen3
+      - --tool-call-parser=qwen3_coder
+      - --enable-auto-tool-choice
+      # dflash JSON 内の "attention_backend":"TRITON_ATTN" は必須。
+      #   README が「vLLM は target backend を drafter に継承しない」と明記しているため、
+      #   target 側 (--attention-backend) と drafter 側 (JSON内) の両方に TRITON_ATTN を指定する。
+      - --speculative-config={"method":"dflash","model":"/drafter","num_speculative_tokens":11,"attention_backend":"TRITON_ATTN"}
+      - --trust-remote-code
+      - --host=0.0.0.0
+      - --port=8000
+    restart: "no"

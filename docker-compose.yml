@@ -1,0 +1,69 @@
+# FP8 構成(初期構成): Qwen/Qwen3.6-35B-A3B-FP8 + MTP num=3。
+# 公式 vLLM イメージ(cu130-nightly、当時 v0.19.2 系)。計測と経緯は reports/REPORT.md の「FP8 構成」。
+# パラメータ(HOST_PORT / MAX_MODEL_LEN / MAX_NUM_SEQS / GPU_MEMORY_UTILIZATION /
+# MAX_NUM_BATCHED_TOKENS)は .env から読む。env.example 参照。
+services:
+  vllm:
+    image: vllm/vllm-openai:cu130-nightly
+    container_name: vllm-qwen3.6
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - VLLM_USAGE_SOURCE=production
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      # SM121a (GB10 Blackwell) 向け
+      - CUTE_DSL_ARCH=sm_121a
+      - FLASHINFER_DISABLE_VERSION_CHECK=1
+      # FlashInfer の JIT コンパイルを直列にして、128GB 統合メモリでのホスト RAM OOM を避ける
+      - MAX_JOBS=1
+      - FLASHINFER_JIT_MAX_PARALLEL_COMPILE=1
+      - HF_HOME=/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ${HF_CACHE_DIR:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ${MODELS_DIR:-~/models}:/models
+      - ./.cache/flashinfer:/root/.cache/flashinfer
+      - ./.cache/vllm:/root/.cache/vllm
+    ports:
+      - "127.0.0.1:${HOST_PORT}:8000"
+    ipc: host
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    command:
+      # FP8 本体 + MTP 投機(num_speculative_tokens=3)
+      - Qwen/Qwen3.6-35B-A3B-FP8
+      # served-model-name は複数指定できる。正式名と短い別名 "qwen" の2つで受け付ける
+      - --served-model-name
+      - Qwen/Qwen3.6-35B-A3B
+      - qwen
+      - --tensor-parallel-size=1
+      - --max-model-len=${MAX_MODEL_LEN}
+      - --max-num-seqs=${MAX_NUM_SEQS}
+      - --gpu-memory-utilization=${GPU_MEMORY_UTILIZATION}
+      - --max-num-batched-tokens=${MAX_NUM_BATCHED_TOKENS}
+      - --trust-remote-code
+      - --host=0.0.0.0
+      - --port=8000
+      - --dtype=auto
+      - --kv-cache-dtype=fp8
+      - --attention-backend=flashinfer
+      - --enable-chunked-prefill
+      - --enable-prefix-caching
+      - --reasoning-parser=qwen3
+      - --enable-auto-tool-choice
+      - --tool-call-parser=qwen3_coder
+      - --speculative-config={"method":"mtp","num_speculative_tokens":3,"moe_backend":"triton"}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 1200s
+    restart: unless-stopped

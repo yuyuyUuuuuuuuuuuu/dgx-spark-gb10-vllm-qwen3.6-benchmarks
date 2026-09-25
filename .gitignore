@@ -1,0 +1,31 @@
+# ローカル設定・秘密
+.env
+.env.*
+*.env
+
+# compose が ./.cache/ 以下に作る flashinfer / vLLM のキャッシュ
+.cache/
+
+# モデル重み・ダウンロード物
+models/
+*.safetensors
+*.bin
+*.gguf
+*.pt
+*.pth
+
+# bench-datasets/make_code_bcb.py で再生成するデータセット
+bench-datasets/code_bcb.jsonl
+
+# Python / 実行ログ
+__pycache__/
+*.pyc
+*.log
+nohup.out
+
+# バックアップ・ダンプ
+*.bak
+*.bak.*
+*.orig
+*.dump
+*.sql

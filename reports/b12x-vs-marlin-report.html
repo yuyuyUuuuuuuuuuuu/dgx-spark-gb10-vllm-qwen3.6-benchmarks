@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>b12x vs Marlin × MTP (GB10)</title>
+<style>
+  :root{--surface-1:#fcfcfb;--surface-2:#f4f3f0;--border:#e2e1dc;--text-primary:#0b0b0b;--text-secondary:#52514e;--text-muted:#8a8880;--marlin:#2a78d6;--b12x:#eb6834;--good:#0ca30c;--bad:#e34948;--grid:#ebeae6;}
+  @media (prefers-color-scheme:dark){:root{--surface-1:#1a1a19;--surface-2:#222220;--border:#333330;--text-primary:#fff;--text-secondary:#c3c2b7;--text-muted:#8f8e85;--marlin:#3987e5;--b12x:#d95926;--grid:#2c2c2a;}}
+  :root[data-theme="dark"]{--surface-1:#1a1a19;--surface-2:#222220;--border:#333330;--text-primary:#fff;--text-secondary:#c3c2b7;--text-muted:#8f8e85;--marlin:#3987e5;--b12x:#d95926;--grid:#2c2c2a;}
+  :root[data-theme="light"]{--surface-1:#fcfcfb;--surface-2:#f4f3f0;--border:#e2e1dc;--text-primary:#0b0b0b;--text-secondary:#52514e;--text-muted:#8a8880;--marlin:#2a78d6;--b12x:#eb6834;--grid:#ebeae6;}
+  *{box-sizing:border-box}
+  body{background:var(--surface-1);color:var(--text-primary);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif;line-height:1.6;margin:0;padding:32px 20px;}
+  .wrap{max-width:900px;margin:0 auto;}
+  h1{font-size:1.5rem;margin:0 0 4px;letter-spacing:-.01em;}
+  .sub{color:var(--text-secondary);font-size:.9rem;margin-bottom:6px;}
+  .meta{color:var(--text-muted);font-size:.78rem;margin-bottom:26px;}
+  h2{font-size:1.12rem;margin:34px 0 6px;}
+  .lead{color:var(--text-secondary);font-size:.9rem;margin:0 0 16px;}
+  .tldr{background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin:8px 0;}
+  .tldr h3{margin:0 0 10px;font-size:.9rem;letter-spacing:.02em;text-transform:uppercase;color:var(--text-muted);}
+  .tldr ul{margin:0;padding-left:20px;} .tldr li{margin:6px 0;}
+  .verdict{display:inline-block;font-weight:700;padding:1px 8px;border-radius:6px;font-size:.85rem;}
+  .v-bad{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad);}
+  .v-win{background:color-mix(in srgb,var(--good) 16%,transparent);color:var(--good);}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin:14px 0 6px;font-size:.85rem;}
+  .legend span{display:inline-flex;align-items:center;gap:7px;color:var(--text-secondary);}
+  .sw{width:12px;height:12px;border-radius:3px;display:inline-block;}
+  .card{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:18px 16px 8px;margin:6px 0 10px;overflow-x:auto;}
+  .card h4{margin:0 0 2px;font-size:.96rem;} .card .cap{color:var(--text-muted);font-size:.79rem;margin:0 0 12px;}
+  svg{display:block;width:100%;height:auto;min-width:540px;}
+  .axis{stroke:var(--grid);stroke-width:1;} .tick{fill:var(--text-muted);font-size:11px;}
+  .glabel{fill:var(--text-secondary);font-size:11.5px;font-weight:600;} .barval{fill:var(--text-primary);font-size:10px;font-weight:600;}
+  .zeroline{stroke:var(--text-muted);stroke-width:1;}
+  .tablewrap{overflow-x:auto;border:1px solid var(--border);border-radius:12px;padding:4px 14px;margin:8px 0;}
+  table{border-collapse:collapse;width:100%;font-size:.83rem;} th,td{padding:7px 9px;text-align:right;border-bottom:1px solid var(--border);}
+  th:first-child,td:first-child{text-align:left;} thead th{color:var(--text-muted);font-weight:600;font-size:.75rem;text-transform:uppercase;}
+  td.pos{color:var(--good);font-weight:600;} td.neg{color:var(--bad);font-weight:600;} .win{font-weight:700;}
+  code{background:var(--surface-2);padding:1px 5px;border-radius:4px;font-size:.85em;}
+  .foot{margin-top:38px;padding-top:16px;border-top:1px solid var(--border);color:var(--text-muted);font-size:.78rem;}
+</style>
+
+<div class="wrap">
+  <h1>b12x vs Marlin MoEカーネル × MTP num=1/2/3</h1>
+  <div class="sub">「num=3 に b12x を足せばさらに速くなるか?」の実測検証。Qwen3.6-35B-A3B-NVFP4 / GB10。</div>
+  <div class="meta">Marlin = vLLM 0.23.0 (aeon イメージ, flashinfer attention) / b12x = vLLM 0.25.2 (anemll イメージ, Triton attention) · <code>vllm bench serve</code> · 単発(conc=1)+並行(conc=4) × 自然文/短文/コード · 出力長512固定 · 全run失敗0 · 指標=median TPOTから算出した単発decode tok/s</div>
+
+  <div class="tldr">
+    <h3>結論: b12x を足しても速くならない</h3>
+    <ul>
+      <li><b>最速は Marlin+MTP3</b>(単発99.0 tok/s平均)。<b>b12x+MTP3 は 98.5</b> で僅かに負ける。</li>
+      <li>単発は MTP3 同士で ±2.5% 以内の互角だが、<b>並行conc=4 では b12x が全条件で遅い</b> <span class="verdict v-bad">MTP3 同士で −4〜−11%</span>(num 全体では −1〜−14%)。</li>
+      <li>理由: b12x image は壊れた flashinfer decode を避けるため <b>attention=Triton 強制</b>。その代償が b12x の MoEカーネル利得(+2.8%)を食い、MTPで attention 呼び出しが増えるほど悪化。</li>
+      <li><b>速度を決めるのは MoEカーネル(Marlin/b12x)ではなく MTP と attention。</b> ベースラインの flashinfer + Marlin + MTP が b12x を持ち出すより速い。→ <b>b12x に乗り換える意味はない。Marlin のままでよい。</b></li>
+    </ul>
+  </div>
+
+  <div class="legend">
+    <span><i class="sw" style="background:var(--marlin)"></i>Marlin MoE(ベースライン系)</span>
+    <span><i class="sw" style="background:var(--b12x)"></i>b12x MoE</span>
+  </div>
+
+  <h2>単発(conc=1)decode速度 [tok/s]</h2>
+  <p class="lead">MTP num 別に Marlin(青)と b12x(橙)を並置。高いほど速い。単発ではほぼ互角、num=3 同士でも Marlin ≳ b12x。</p>
+  <div class="card"><h4>concurrency = 1</h4><p class="cap">num を上げると両者とも速くなる。num=1 では b12x が約 4% 速いが、num=2 では Marlin が 3〜4% 速く、num=3 ではほぼ互角(コードのみ b12x が +1.7%)。</p><div id="c_single"></div></div>
+
+  <h2>並行(conc=4)decode速度 [tok/s]</h2>
+  <p class="lead">ここで差が出る。b12x は全 num・全ワークロードで Marlin より遅い(Triton attention の代償が並行で顕在化)。</p>
+  <div class="card"><h4>concurrency = 4</h4><p class="cap">b12x+MTP2 は特に落ち込む(Marlin比 −10%超も)。並行負荷では b12x は不利。</p><div id="c_conc4"></div></div>
+
+  <h2>全数表(単発 conc=1)</h2>
+  <div class="tablewrap"><div id="tbl"></div></div>
+  <p class="lead" style="margin-top:14px">最速ランキング(単発・全ワークロード平均):</p>
+  <div class="tablewrap"><div id="rank"></div></div>
+
+  <div class="foot">
+    b12x + MTP の起動には落とし穴が 1 つある: vLLM PR#39930 以降、MTP drafter が attention backend を独立に選び、このイメージで壊れている flashinfer decode を選んでしまう → <code>--speculative-config</code> に <code>"attention_backend":"triton_attn"</code> を追加して回避(<code>docker-compose.b12x-mtp{1,2,3}.yml</code>)。全 run 失敗 0。Marlin 側は <code>docker-compose.mtp{1,2,3}.yml</code>。生データ: <code>bench-datasets/results/{mtp,b12xmtp}{1,2,3}__*.json</code>。
+  </div>
+</div>
+
+<script>
+const DATA=[{"moe": "marlin", "mtp": 1, "wl": "ja", "cc": 1, "dps": 87.1, "tpot": 11.49, "acc": 82.2}, {"moe": "marlin", "mtp": 1, "wl": "ja", "cc": 4, "dps": 55.2, "tpot": 18.13, "acc": 83.5}, {"moe": "marlin", "mtp": 1, "wl": "short", "cc": 1, "dps": 86.7, "tpot": 11.54, "acc": 79.4}, {"moe": "marlin", "mtp": 1, "wl": "short", "cc": 4, "dps": 52.1, "tpot": 19.18, "acc": 80.3}, {"moe": "marlin", "mtp": 1, "wl": "code", "cc": 1, "dps": 88.2, "tpot": 11.34, "acc": 85.1}, {"moe": "marlin", "mtp": 1, "wl": "code", "cc": 4, "dps": 53.3, "tpot": 18.75, "acc": 86.1}, {"moe": "marlin", "mtp": 2, "wl": "ja", "cc": 1, "dps": 96.7, "tpot": 10.34, "acc": 72.3}, {"moe": "marlin", "mtp": 2, "wl": "ja", "cc": 4, "dps": 49.3, "tpot": 20.29, "acc": 72.4}, {"moe": "marlin", "mtp": 2, "wl": "short", "cc": 1, "dps": 95.7, "tpot": 10.45, "acc": 68.7}, {"moe": "marlin", "mtp": 2, "wl": "short", "cc": 4, "dps": 48.9, "tpot": 20.45, "acc": 71.5}, {"moe": "marlin", "mtp": 2, "wl": "code", "cc": 1, "dps": 99.8, "tpot": 10.02, "acc": 76.0}, {"moe": "marlin", "mtp": 2, "wl": "code", "cc": 4, "dps": 48.0, "tpot": 20.82, "acc": 75.4}, {"moe": "marlin", "mtp": 3, "wl": "ja", "cc": 1, "dps": 97.6, "tpot": 10.25, "acc": 61.7}, {"moe": "marlin", "mtp": 3, "wl": "ja", "cc": 4, "dps": 61.1, "tpot": 16.37, "acc": 62.6}, {"moe": "marlin", "mtp": 3, "wl": "short", "cc": 1, "dps": 98.6, "tpot": 10.14, "acc": 61.2}, {"moe": "marlin", "mtp": 3, "wl": "short", "cc": 4, "dps": 59.0, "tpot": 16.95, "acc": 59.2}, {"moe": "marlin", "mtp": 3, "wl": "code", "cc": 1, "dps": 100.8, "tpot": 9.92, "acc": 67.5}, {"moe": "marlin", "mtp": 3, "wl": "code", "cc": 4, "dps": 62.0, "tpot": 16.14, "acc": 67.8}, {"moe": "b12x", "mtp": 1, "wl": "ja", "cc": 1, "dps": 91.0, "tpot": 10.98, "acc": 82.0}, {"moe": "b12x", "mtp": 1, "wl": "ja", "cc": 4, "dps": 53.0, "tpot": 18.87, "acc": 81.6}, {"moe": "b12x", "mtp": 1, "wl": "short", "cc": 1, "dps": 90.1, "tpot": 11.09, "acc": 82.1}, {"moe": "b12x", "mtp": 1, "wl": "short", "cc": 4, "dps": 51.6, "tpot": 19.39, "acc": 80.1}, {"moe": "b12x", "mtp": 1, "wl": "code", "cc": 1, "dps": 91.9, "tpot": 10.88, "acc": 85.6}, {"moe": "b12x", "mtp": 1, "wl": "code", "cc": 4, "dps": 49.0, "tpot": 20.43, "acc": 84.2}, {"moe": "b12x", "mtp": 2, "wl": "ja", "cc": 1, "dps": 93.3, "tpot": 10.72, "acc": 71.2}, {"moe": "b12x", "mtp": 2, "wl": "ja", "cc": 4, "dps": 44.1, "tpot": 22.69, "acc": 71.6}, {"moe": "b12x", "mtp": 2, "wl": "short", "cc": 1, "dps": 91.7, "tpot": 10.91, "acc": 68.4}, {"moe": "b12x", "mtp": 2, "wl": "short", "cc": 4, "dps": 42.1, "tpot": 23.78, "acc": 66.4}, {"moe": "b12x", "mtp": 2, "wl": "code", "cc": 1, "dps": 96.9, "tpot": 10.32, "acc": 75.4}, {"moe": "b12x", "mtp": 2, "wl": "code", "cc": 4, "dps": 42.4, "tpot": 23.57, "acc": 76.1}, {"moe": "b12x", "mtp": 3, "wl": "ja", "cc": 1, "dps": 96.9, "tpot": 10.32, "acc": 61.6}, {"moe": "b12x", "mtp": 3, "wl": "ja", "cc": 4, "dps": 58.4, "tpot": 17.12, "acc": 61.1}, {"moe": "b12x", "mtp": 3, "wl": "short", "cc": 1, "dps": 96.2, "tpot": 10.39, "acc": 59.8}, {"moe": "b12x", "mtp": 3, "wl": "short", "cc": 4, "dps": 55.6, "tpot": 17.98, "acc": 57.7}, {"moe": "b12x", "mtp": 3, "wl": "code", "cc": 1, "dps": 102.5, "tpot": 9.75, "acc": 66.2}, {"moe": "b12x", "mtp": 3, "wl": "code", "cc": 4, "dps": 55.3, "tpot": 18.09, "acc": 66.0}];
+const WL=["ja","short","code"],WLN={ja:"自然文",short:"短文",code:"コード"};
+const g=(moe,mtp,wl,cc,k)=>{const r=DATA.find(d=>d.moe==moe&&d.mtp==mtp&&d.wl==wl&&d.cc==cc);return r?r[k]:null;};
+
+// grouped chart: x = (workload × mtp), 2 bars each (marlin, b12x)
+function chart(elId,cc){
+  const W=680,H=280,mL=42,mR=12,mT=14,mB=54,iw=W-mL-mR,ih=H-mT-mB;
+  let max=0; DATA.forEach(d=>{if(d.cc==cc&&d.dps>max)max=d.dps;}); max=Math.ceil(max/20)*20;
+  const groups=[]; WL.forEach(wl=>[1,2,3].forEach(m=>groups.push({wl,m})));
+  const gw=iw/groups.length, bw=Math.min(15,(gw-8)/2);
+  const y=v=>ih-(v/max)*ih;
+  let s=`<svg viewBox="0 0 ${W} ${H}" role="img">`;
+  for(let t=0;t<=max;t+=max/5){const yy=mT+y(t);s+=`<line class="axis" x1="${mL}" y1="${yy}" x2="${W-mR}" y2="${yy}"/><text class="tick" x="${mL-6}" y="${yy+3}" text-anchor="end">${Math.round(t)}</text>`;}
+  groups.forEach((gp,i)=>{
+    const gx=mL+i*gw, cx=gx+gw/2;
+    const vm=g("marlin",gp.m,gp.wl,cc,"dps"), vb=g("b12x",gp.m,gp.wl,cc,"dps");
+    const x1=cx-bw-1, x2=cx+1;
+    s+=`<rect x="${x1}" y="${mT+y(vm)}" width="${bw}" height="${ih-y(vm)}" rx="2.5" fill="var(--marlin)"><title>Marlin MTP${gp.m} ${WLN[gp.wl]}: ${vm}</title></rect>`;
+    s+=`<rect x="${x2}" y="${mT+y(vb)}" width="${bw}" height="${ih-y(vb)}" rx="2.5" fill="var(--b12x)"><title>b12x MTP${gp.m} ${WLN[gp.wl]}: ${vb}</title></rect>`;
+    s+=`<text class="glabel" x="${cx}" y="${H-mB+16}" text-anchor="middle" style="font-size:10px">n${gp.m}</text>`;
+    if(gp.m==2) s+=`<text class="glabel" x="${cx}" y="${H-mB+34}" text-anchor="middle">${WLN[gp.wl]}</text>`;
+  });
+  s+=`<line class="zeroline" x1="${mL}" y1="${mT+ih}" x2="${W-mR}" y2="${mT+ih}"/></svg>`;
+  document.getElementById(elId).innerHTML=s;
+}
+chart("c_single",1); chart("c_conc4",4);
+
+// table conc=1
+(function(){
+  let h=`<table><thead><tr><th>ワークロード</th><th>MTP</th><th>Marlin</th><th>b12x</th><th>b12x vs Marlin</th></tr></thead><tbody>`;
+  WL.forEach(wl=>[1,2,3].forEach(m=>{
+    const vm=g("marlin",m,wl,1,"dps"),vb=g("b12x",m,wl,1,"dps");
+    const d=(vb/vm-1)*100, cls=d>=0?"pos":"neg", p=(d>=0?"+":"")+d.toFixed(1)+"%";
+    h+=`<tr><td>${WLN[wl]}</td><td>${m}</td><td>${vm}</td><td>${vb}</td><td class="${cls}">${p}</td></tr>`;
+  }));
+  h+=`</tbody></table>`; document.getElementById("tbl").innerHTML=h;
+})();
+// ranking
+(function(){
+  const items=[];
+  ["marlin","b12x"].forEach(moe=>[1,2,3].forEach(m=>{
+    const vals=WL.map(wl=>g(moe,m,wl,1,"dps"));
+    if(vals.every(v=>v!=null)) items.push({name:(moe=="marlin"?"Marlin":"b12x")+" MTP"+m,avg:vals.reduce((a,b)=>a+b,0)/3});
+  }));
+  items.sort((a,b)=>b.avg-a.avg);
+  let h=`<table><thead><tr><th>順位</th><th>構成</th><th>単発 tok/s (平均)</th></tr></thead><tbody>`;
+  items.forEach((it,i)=>{h+=`<tr><td>${i+1}${i==0?" 🥇":""}</td><td class="${i==0?'win':''}">${it.name}</td><td class="${i==0?'win':''}">${it.avg.toFixed(1)}</td></tr>`;});
+  h+=`</tbody></table>`; document.getElementById("rank").innerHTML=h;
+})();
+</script>

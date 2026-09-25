@@ -1,0 +1,88 @@
+# ベースライン構成: NVFP4 + MTP num=3 + async-scheduling(vLLM 0.23.0 系の SM121 ビルド)。
+# AEON0251 レポートなどで「ベースライン」と呼ぶ構成(MTP_TUNING / B12X レポートの時点のベースラインは MTP num=1 = docker-compose.mtp1.yml)。
+# docker-compose.mtp3.yml との差は
+# VLLM_USE_FLASHINFER_SAMPLER=0・任意の API キー・container_name・restart だけ(計測は mtp3.yml で実施)。
+# パラメータは .env から読む。計測時の値は env.example を参照。
+services:
+  vllm:
+    # サードパーティ製のパッチ済みイメージ(SM121 NVFP4 対応, vLLM 0.23.0)。固定タグで参照する。
+    # モデルは公式 nvidia/Qwen3.6-35B-A3B-NVFP4 を読む(イメージ同梱モデルは使わない)。
+    image: ghcr.io/aeon-7/aeon-vllm-ultimate:2026-06-18-v0.23.0-dflashfix
+    container_name: vllm-qwen3.6
+    entrypoint: ["vllm"]
+    environment:
+      # 任意。設定すると OpenAI 互換 API に Bearer 認証が掛かる(空なら認証なし)。
+      - VLLM_API_KEY=${VLLM_API_KEY:-}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - VLLM_USAGE_SOURCE=production
+      - VLLM_NO_USAGE_STATS=1
+      - DO_NOT_TRACK=1
+      - RAY_USAGE_STATS_ENABLED=0
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      # SM121a (GB10 Blackwell) NVFP4 有効化
+      - TORCH_CUDA_ARCH_LIST=12.1a
+      - ENABLE_NVFP4_SM100=0
+      - VLLM_NVFP4_GEMM_BACKEND=flashinfer-cutlass
+      # Marlin の small size_n 最適化。計測で +2%(47.3 -> 48.3 t/s)。util/メモリ枠は不変。
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - VLLM_USE_FLASHINFER_SAMPLER=0
+      - NVIDIA_FORWARD_COMPAT=1
+      - CUTE_DSL_ARCH=sm_121a
+      - FLASHINFER_DISABLE_VERSION_CHECK=1
+      - MAX_JOBS=1
+      - FLASHINFER_JIT_MAX_PARALLEL_COMPILE=1
+      - HF_HOME=/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ${HF_CACHE_DIR:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ${MODELS_DIR:-~/models}:/models
+      - ./.cache/flashinfer:/root/.cache/flashinfer
+      - ./.cache/vllm:/root/.cache/vllm
+    ports:
+      - "127.0.0.1:${HOST_PORT}:8000"
+    ipc: host
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    command:
+      # NVFP4 + MTP num=3 + async-scheduling。
+      # vllm bench serve の計測(単発/並行 × 自然文/短文/コード, 出力長512固定)で num=3 が単発・conc=4 とも最速。
+      #   単発 decode tok/s: 自然文 87->98(+12%) / 短文 87->99(+14%) / コード 88->101(+14%)。
+      #   品質は num=1 と同等(投機デコードはロスレス)。acceptance は num を上げると 83->63% に下がるが速度は num=3 が最良。
+      # async-scheduling なしの計測では「num=3 で自然文が 82->75.6 t/s に落ちる」結果だった(docker-compose.nomtp.yml のコメント参照)。
+      # num=1 に戻す場合は num_speculative_tokens を 1 に(docker-compose.mtp1.yml と同じ)。
+      - serve
+      - nvidia/Qwen3.6-35B-A3B-NVFP4
+      - --served-model-name=Qwen/Qwen3.6-35B-A3B
+      - --tensor-parallel-size=1
+      - --max-model-len=${MAX_MODEL_LEN}
+      - --max-num-seqs=${MAX_NUM_SEQS}
+      - --gpu-memory-utilization=${GPU_MEMORY_UTILIZATION}
+      - --max-num-batched-tokens=8192
+      - --trust-remote-code
+      - --host=0.0.0.0
+      - --port=8000
+      - --dtype=auto
+      - --kv-cache-dtype=fp8
+      - --attention-backend=flashinfer
+      - --enable-chunked-prefill
+      - --enable-prefix-caching
+      - --async-scheduling
+      - --reasoning-parser=qwen3
+      - --enable-auto-tool-choice
+      - --tool-call-parser=qwen3_coder
+      - --speculative-config={"method":"mtp","num_speculative_tokens":3,"moe_backend":"triton"}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 1200s
+    restart: unless-stopped

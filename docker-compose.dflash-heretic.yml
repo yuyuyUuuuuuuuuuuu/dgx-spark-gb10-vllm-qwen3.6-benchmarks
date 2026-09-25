@@ -1,0 +1,137 @@
+services:
+  vllm-dflash-heretic:
+    # ============================================================================
+    # DFlash heretic-body 版(パッチなし)
+    # ----------------------------------------------------------------------------
+    # 目的: コミュニティ投稿(NeoAi)の GB10 単発 286 tok/s を再現する。投稿の body は nvidia 版ではなく
+    #       heretic 版 (AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4)。nvidia 公式 body
+    #       (nvidia/Qwen3.6-35B-A3B-NVFP4) では、hybrid target × 外部 z-lab DFlash drafter の
+    #       page_size assert(unify_kv_cache_spec_page_size)により 4 回とも起動しなかった。
+    # 結果: 記録なし。
+    #
+    # 【この版の仮説】
+    #   z-lab drafter は heretic body に合わせて作られており、body を heretic に
+    #   一致させれば target/drafter の head geometry が噛み、page_size が揃う可能性が
+    #   ある(イメージ作者の quickstart が heretic body + z-lab drafter の組で動いている、という
+    #   公開情報に依拠)。よって body を nvidia 版から heretic 版に差し替える。
+    #
+    # 【イメージ作者の heretic quickstart(README 行192-208)への準拠】
+    #   README のフラグを踏襲する。変えたのは以下 4 点のみ:
+    #     1) model body path      : /models/heretic(README は /models/qwen36。同じ heretic body を別の mount 名に)
+    #     2) --served-model-name  : Qwen/Qwen3.6-35B-A3B(ベースラインと同じ名前。README は qwen36-* 3系統)
+    #     3) --gpu-memory-utilization : 0.44(ベースラインと同じ値に固定。README の公式値は 0.85)
+    #     4) --port / ports       : 8001(8000 のサーバと衝突しないように。README は 8000)
+    #   それ以外(quantization / attention-backend / speculative-config / max-model-len /
+    #   max-num-seqs / max-num-batched-tokens / chunked-prefill / prefix-caching 等)は
+    #   README の公式値をそのまま使う。
+    #
+    #   README が明示的に「するな」と言っていること(全て守る):
+    #     ・spec config に "attention_backend" キーを足すな
+    #       (非因果 DFlash drafter は default backend / BF16 KV が要る)
+    #     ・--kv-cache-dtype を設定するな(BF16 KV のまま)
+    #     ・--mamba-block-size を設定するな(この drafter は全 full-attention)
+    #   README の値で fixed 版と違う点:
+    #     ・--max-num-batched-tokens = 16384(README 公式。fixed 版は 32768 にしていたが
+    #       README は「65536 は compile-range を超える。16384 が compiled range 内で
+    #       throughput-neutral」と明記 → 公式値 16384 を採用)
+    #     ・--load-format=safetensors は README には無いが、fixed 版と揃えて残す。
+    #
+    # 【パッチ(patches/patch-dflash-pagesize.sh)を使うか】
+    #   この heretic 版は「まずパッチ無しで起動」する。
+    #     理由: body を heretic に一致させた狙いはまさに page_size を噛ませて
+    #     unify を不要にすること。もし本当に噛むなら、パッチ(drafter SWA→Full 変換に
+    #     indexes_kv_by_block_stride=True を注入)は「対象なし」になり無害だが、
+    #     万一 heretic body で spec 構築経路が変わりパッチが別の不整合を生むと
+    #     切り分けが困難になる。よって初回はパッチを通さず、READMEの素の構成で
+    #     page_size assert が出るか観測する。
+    #   もし page_size assert(unify_kv_cache_spec_page_size)が出たら:
+    #     下の command を「パッチ版」(コメントアウト済みブロック)に差し替えて再起動。
+    #     パッチは冪等・構文検証つき・イメージ無改変(mount 実行のみ)なので保険として安全。
+    #     → この場合 heretic でも drafter geometry が別で噛まなかったことの証拠になる。
+    # ============================================================================
+    image: ghcr.io/aeon-7/aeon-vllm-ultimate:2026-07-01-v0.24.0   # 投稿と同じ v0.24.0
+    container_name: vllm-dflash-heretic
+    entrypoint: ["/bin/bash", "-lc"]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - VLLM_NO_USAGE_STATS=1
+      - DO_NOT_TRACK=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - TORCH_CUDA_ARCH_LIST=12.1a
+      - CUTE_DSL_ARCH=sm_121a
+      - FLASHINFER_DISABLE_VERSION_CHECK=1
+      - HF_HOME=/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    volumes:
+      - ${HF_CACHE_DIR:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ${MODELS_DIR:-~/models}:/models
+      # heretic body(${MODELS_DIR}/Qwen3.6-35B-A3B-heretic-NVFP4 に置く)を /models/heretic に read-only mount
+      - ${MODELS_DIR:-~/models}/Qwen3.6-35B-A3B-heretic-NVFP4:/models/heretic:ro
+      - ${MODELS_DIR:-~/models}/Qwen3.6-35B-A3B-DFlash-zlab:/drafter:ro   # z-lab drafter(771MB)
+      - ./patches/patch-dflash-pagesize.sh:/patch/patch-dflash-pagesize.sh:ro  # 保険のパッチ(初回は使わない)
+      - ./.cache/flashinfer-dflash-heretic:/root/.cache/flashinfer
+      - ./.cache/vllm-dflash-heretic:/root/.cache/vllm
+    ports:
+      - "127.0.0.1:8001:8000"   # 8001。8000 のサーバと衝突しないように
+    ipc: host
+    ulimits:
+      memlock: {soft: -1, hard: -1}
+    command:
+      - |
+        set -e
+        # ---- 初回: パッチ無し(READMEの素の公式構成) ------------------------------
+        #   heretic body なら page_size が噛んで unify 不要になる仮説を検証する。
+        exec vllm serve /models/heretic \
+          --served-model-name=Qwen/Qwen3.6-35B-A3B \
+          --tensor-parallel-size=1 \
+          --dtype=auto \
+          --quantization=compressed-tensors \
+          --max-model-len=262144 \
+          --max-num-seqs=64 \
+          --max-num-batched-tokens=16384 \
+          --gpu-memory-utilization=0.44 \
+          --enable-chunked-prefill \
+          --enable-prefix-caching \
+          --load-format=safetensors \
+          --trust-remote-code \
+          --enable-auto-tool-choice \
+          --tool-call-parser=qwen3_coder \
+          --reasoning-parser=qwen3 \
+          --host=0.0.0.0 \
+          --port=8000 \
+          --attention-backend=flash_attn \
+          --speculative-config='{"method":"dflash","model":"/drafter","num_speculative_tokens":11}'
+        # ---- フォールバック(page_size assert が出たらこちらに差し替え) --------------
+        #  手順: 上の exec ブロックを丸ごとコメントアウトし、下の 2 行(bash ... と exec ...)を有効化して再起動。
+        #    heretic body でも drafter geometry が別で page_size が噛まなかった証拠になる。
+        #
+        # bash /patch/patch-dflash-pagesize.sh
+        # exec vllm serve /models/heretic \
+        #   --served-model-name=Qwen/Qwen3.6-35B-A3B \
+        #   --tensor-parallel-size=1 \
+        #   --dtype=auto \
+        #   --quantization=compressed-tensors \
+        #   --max-model-len=262144 \
+        #   --max-num-seqs=64 \
+        #   --max-num-batched-tokens=16384 \
+        #   --gpu-memory-utilization=0.44 \
+        #   --enable-chunked-prefill \
+        #   --enable-prefix-caching \
+        #   --load-format=safetensors \
+        #   --trust-remote-code \
+        #   --enable-auto-tool-choice \
+        #   --tool-call-parser=qwen3_coder \
+        #   --reasoning-parser=qwen3 \
+        #   --host=0.0.0.0 \
+        #   --port=8000 \
+        #   --attention-backend=flash_attn \
+        #   --speculative-config='{"method":"dflash","model":"/drafter","num_speculative_tokens":11}'
+        #
+        #  それでも unify で落ちる場合(pad パスに入らない):
+        #    --speculative-config に "attention_backend":"flash_attn" を足して切り分け。
+        #    (公式は「入れるな」だが page_size 問題の切り分けには有効)
+        # ---------------------------------------------------------------------------
+    restart: "no"

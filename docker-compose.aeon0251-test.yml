@@ -1,0 +1,54 @@
+services:
+  vllm-aeon0251:
+    # aeon イメージ v0.25.1 + MTP num=3 の初回比較用(結果ラベル aeon0251)。ホストのポート 8000 を使う。
+    # ベースライン(0.23.0)から一部の env/フラグ(VLLM_MARLIN_USE_ATOMIC_ADD, --attention-backend=flashinfer,
+    # tool-call 系)が抜けている。条件を揃えた版は docker-compose.aeon0251-fair.yml。
+    image: ghcr.io/aeon-7/aeon-vllm-ultimate:2026-07-16-v0.25.1
+    container_name: vllm-aeon0251-test
+    entrypoint: ["vllm"]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - VLLM_NO_USAGE_STATS=1
+      - DO_NOT_TRACK=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - TORCH_CUDA_ARCH_LIST=12.1a
+      - CUTE_DSL_ARCH=sm_121a
+      - FLASHINFER_DISABLE_VERSION_CHECK=1
+      - HF_HOME=/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ${HF_CACHE_DIR:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ${MODELS_DIR:-~/models}:/models
+      - ./.cache/flashinfer-aeon0251:/root/.cache/flashinfer
+      - ./.cache/vllm-aeon0251:/root/.cache/vllm
+    ports:
+      - "127.0.0.1:8000:8000"
+    ipc: host
+    ulimits:
+      memlock: {soft: -1, hard: -1}
+    command:
+      - serve
+      - nvidia/Qwen3.6-35B-A3B-NVFP4
+      - --served-model-name=Qwen/Qwen3.6-35B-A3B
+      - --tensor-parallel-size=1
+      - --max-model-len=262144
+      - --max-num-seqs=8
+      - --gpu-memory-utilization=0.44
+      - --max-num-batched-tokens=8192
+      - --trust-remote-code
+      - --host=0.0.0.0
+      - --port=8000
+      - --dtype=auto
+      - --kv-cache-dtype=fp8
+      - --enable-chunked-prefill
+      - --enable-prefix-caching
+      - --async-scheduling
+      - --reasoning-parser=qwen3
+      - --speculative-config={"method":"mtp","num_speculative_tokens":3,"moe_backend":"triton"}
+    restart: "no"

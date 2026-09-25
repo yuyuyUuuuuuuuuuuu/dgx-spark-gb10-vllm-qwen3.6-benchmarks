@@ -1,0 +1,62 @@
+# b12x MoE, no MTP (fair A/B against docker-compose.marlin-test.yml). See reports/B12X_EXPERIMENT_REPORT.md.
+services:
+  vllm-b12x:
+    # b12x experiment. anemll GB10 image = vLLM 0.25.2 + flashinfer 0.6.15 (b12x-capable).
+    # Binds host port 8000: stop any other server on 8000 first.
+    image: ghcr.io/anemll/dspark-vllm-gx10:0.1.1
+    container_name: vllm-b12x-test
+    entrypoint: ["vllm"]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - VLLM_NO_USAGE_STATS=1
+      - DO_NOT_TRACK=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - TORCH_CUDA_ARCH_LIST=12.1a
+      # b12x native-FP4 path enablement
+      - CUTE_DSL_ARCH=sm_121a
+      - FLASHINFER_DISABLE_VERSION_CHECK=1
+      - HF_HOME=/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ${HF_CACHE_DIR:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ${MODELS_DIR:-~/models}:/models
+      - ./.cache/flashinfer-b12x:/root/.cache/flashinfer
+      - ./.cache/vllm-b12x:/root/.cache/vllm
+    ports:
+      - "127.0.0.1:8000:8000"
+    ipc: host
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    command:
+      - serve
+      - nvidia/Qwen3.6-35B-A3B-NVFP4
+      - --served-model-name=Qwen/Qwen3.6-35B-A3B
+      - --tensor-parallel-size=1
+      - --max-model-len=262144
+      - --max-num-seqs=8
+      - --gpu-memory-utilization=0.44
+      - --max-num-batched-tokens=8192
+      - --trust-remote-code
+      - --host=0.0.0.0
+      - --port=8000
+      - --dtype=auto
+      - --kv-cache-dtype=fp8
+      # This image's flashinfer DECODE attention has a broken plan() ABI (19 vs 20 args) vs its vLLM.
+      # Dodge it with Triton attention (CLI flag; the env var VLLM_ATTENTION_BACKEND is ignored here).
+      # b12x MoE is unaffected (separate kernel).
+      - --attention-backend=TRITON_ATTN
+      - --enable-chunked-prefill
+      - --enable-prefix-caching
+      # THE POINT OF THE EXPERIMENT: force native-FP4 b12x on MoE layers.
+      # linear-backend stays auto: nvidia ckpt's GDN/linear layers are FP8 (no b12x kernel),
+      # so forcing linear=b12x crashes at init_fp8_linear_kernel. MoE is where Marlin fallback hurts.
+      - --moe-backend=flashinfer_b12x
+    restart: "no"

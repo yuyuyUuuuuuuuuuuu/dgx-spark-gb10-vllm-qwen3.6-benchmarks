@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Qwen3.6-35B-A3B MTP ベンチマーク (GB10)</title>
+<style>
+  :root{
+    --surface-1:#fcfcfb; --surface-2:#f4f3f0; --border:#e2e1dc;
+    --text-primary:#0b0b0b; --text-secondary:#52514e; --text-muted:#8a8880;
+    --s1:#2a78d6; --s2:#008300; --s3:#e87ba4;
+    --good:#0ca30c; --bad:#e34948;
+    --grid:#ebeae6;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --surface-1:#1a1a19; --surface-2:#222220; --border:#333330;
+      --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#8f8e85;
+      --s1:#3987e5; --s2:#008300; --s3:#d55181;
+      --grid:#2c2c2a;
+    }
+  }
+  :root[data-theme="dark"]{
+    --surface-1:#1a1a19; --surface-2:#222220; --border:#333330;
+    --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#8f8e85;
+    --s1:#3987e5; --s2:#008300; --s3:#d55181; --grid:#2c2c2a;
+  }
+  :root[data-theme="light"]{
+    --surface-1:#fcfcfb; --surface-2:#f4f3f0; --border:#e2e1dc;
+    --text-primary:#0b0b0b; --text-secondary:#52514e; --text-muted:#8a8880;
+    --s1:#2a78d6; --s2:#008300; --s3:#e87ba4; --grid:#ebeae6;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--surface-1); color:var(--text-primary);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Hiragino Sans","Noto Sans JP",sans-serif;
+    line-height:1.6; margin:0; padding:32px 20px; -webkit-font-smoothing:antialiased;}
+  .wrap{max-width:920px; margin:0 auto;}
+  h1{font-size:1.55rem; margin:0 0 4px; letter-spacing:-.01em;}
+  .sub{color:var(--text-secondary); font-size:.92rem; margin-bottom:8px;}
+  .meta{color:var(--text-muted); font-size:.8rem; margin-bottom:28px;}
+  h2{font-size:1.15rem; margin:36px 0 6px; letter-spacing:-.01em;}
+  h2 .n{color:var(--text-muted); font-weight:600; margin-right:8px;}
+  .lead{color:var(--text-secondary); font-size:.92rem; margin:0 0 18px;}
+  .tldr{background:var(--surface-2); border:1px solid var(--border); border-radius:12px; padding:18px 20px; margin:8px 0 8px;}
+  .tldr h3{margin:0 0 10px; font-size:.95rem; letter-spacing:.02em; text-transform:uppercase; color:var(--text-muted);}
+  .tldr ul{margin:0; padding-left:20px;}
+  .tldr li{margin:6px 0;}
+  .verdict{display:inline-block; font-weight:700; padding:1px 8px; border-radius:6px; font-size:.85rem;}
+  .v-win{background:color-mix(in srgb, var(--good) 16%, transparent); color:var(--good);}
+  .v-bad{background:color-mix(in srgb, var(--bad) 16%, transparent); color:var(--bad);}
+  .legend{display:flex; gap:18px; flex-wrap:wrap; margin:14px 0 6px; font-size:.85rem;}
+  .legend span{display:inline-flex; align-items:center; gap:7px; color:var(--text-secondary);}
+  .swatch{width:12px; height:12px; border-radius:3px; display:inline-block;}
+  .chartcard{background:var(--surface-1); border:1px solid var(--border); border-radius:12px; padding:18px 16px 8px; margin:6px 0 10px; overflow-x:auto;}
+  .chartcard h4{margin:0 0 2px; font-size:.98rem;}
+  .chartcard .cap{color:var(--text-muted); font-size:.8rem; margin:0 0 12px;}
+  svg{display:block; width:100%; height:auto; min-width:560px;}
+  .axis{stroke:var(--grid); stroke-width:1;}
+  .tick{fill:var(--text-muted); font-size:11px;}
+  .glabel{fill:var(--text-secondary); font-size:12px; font-weight:600;}
+  .barval{fill:var(--text-primary); font-size:10.5px; font-weight:600;}
+  .zeroline{stroke:var(--text-muted); stroke-width:1;}
+  table{border-collapse:collapse; width:100%; font-size:.84rem; margin:8px 0;}
+  th,td{padding:7px 10px; text-align:right; border-bottom:1px solid var(--border);}
+  th:first-child,td:first-child{text-align:left;}
+  thead th{color:var(--text-muted); font-weight:600; font-size:.78rem; text-transform:uppercase; letter-spacing:.03em;}
+  td.pos{color:var(--good); font-weight:600;} td.neg{color:var(--bad); font-weight:600;}
+  .tablewrap{overflow-x:auto; border:1px solid var(--border); border-radius:12px; padding:4px 14px; margin:8px 0;}
+  .note{font-size:.82rem; color:var(--text-muted); margin:6px 0 0;}
+  code{background:var(--surface-2); padding:1px 5px; border-radius:4px; font-size:.85em;}
+  .foot{margin-top:40px; padding-top:16px; border-top:1px solid var(--border); color:var(--text-muted); font-size:.8rem;}
+</style>
+
+<div class="wrap">
+  <h1>Qwen3.6-35B-A3B — MTP投機デコード ベンチマーク</h1>
+  <div class="sub">NVIDIA GB10 (DGX Spark) / vLLM 0.23.0 / NVFP4。<code>num_speculative_tokens</code> = 1 vs 2 vs 3 の本格比較。</div>
+  <div class="meta">vLLM 0.23.0 (aeon イメージ) + <code>--async-scheduling</code> · <code>vllm bench serve</code> · 出力長512固定 (ignore_eos) · 27 run / 1080 リクエスト / 失敗 0 · 指標=median TPOT(prefill除外の純decode)</div>
+
+  <div class="tldr">
+    <h3>結論</h3>
+    <ul>
+      <li><b>単発(直列)なら速くなる:</b> num=2 で +11〜13%、num=3 で +12〜16%。品質はロスレス(投機採択のみ)。</li>
+      <li><b>だが中並行(conc=4)で num=2 は逆転</b> <span class="verdict v-bad">−6〜11%</span> — 単発測定だけなら見えなかった谷。<b>num=3 は同条件で改善</b> <span class="verdict v-win">+11〜16%</span>。非単調。</li>
+      <li><b>推奨: 用途で分岐。</b> 長文要約のような<b>直列・単発</b>主体なら <b>num=3</b>(全並行度で num=1 以上。単発と conc=4 では最速)。並行が読めないなら num=1 のままが無難(num=2 は中並行で最弱)。</li>
+      <li>acceptance は num 増で単調低下 (num=1 ~83% → num=3 ~63%)。コード>自然文>短文 の順で一貫して高い。</li>
+    </ul>
+  </div>
+
+  <div class="legend">
+    <span><i class="swatch" style="background:var(--s1)"></i>num=1</span>
+    <span><i class="swatch" style="background:var(--s2)"></i>num=2</span>
+    <span><i class="swatch" style="background:var(--s3)"></i>num=3</span>
+  </div>
+
+  <h2><span class="n">1</span>単発あたり純decode速度 (tok/s, 高いほど速い)</h2>
+  <p class="lead">1リクエストを逐次処理したときの1トークンあたり速度 = 1000/median TPOT。ユーザー体感に最も近い。</p>
+  <div class="chartcard">
+    <h4>concurrency = 1(単発)</h4>
+    <p class="cap">直列。ここでは num を上げるほど速い — MTP が最も効く領域。</p>
+    <div id="c_single"></div>
+  </div>
+  <div class="chartcard">
+    <h4>concurrency = 4(中並行)</h4>
+    <p class="cap">ここが核心。<b>num=2 だけ num=1 を下回る</b>(全ワークロード)。num=3 は逆に伸びる。</p>
+    <div id="c_c4"></div>
+  </div>
+  <div class="chartcard">
+    <h4>concurrency = 8(高並行)</h4>
+    <p class="cap">差は縮小。num=2/3 とも num=1 をわずかに上回る程度。</p>
+    <div id="c_c8"></div>
+  </div>
+
+  <h2><span class="n">2</span>spec-decode acceptance rate (%)</h2>
+  <p class="lead">draft トークンが採択された割合。num を上げるほど末尾トークンの精度が落ち低下(Qwenは単一MTP層を反復)。速度の伸び悩みの正体。</p>
+  <div class="chartcard">
+    <h4>acceptance rate — concurrency=1</h4>
+    <p class="cap">num=1 ~83% → num=2 ~72% → num=3 ~63%。ワークロード順は コード > 自然文 > 短文。</p>
+    <div id="c_acc"></div>
+  </div>
+
+  <h2><span class="n">3</span>全数表</h2>
+  <p class="lead">純decode tok/s(=1000/median TPOT)と対 num=1 比。<span style="color:var(--good)">緑=改善</span> / <span style="color:var(--bad)">赤=悪化</span>。</p>
+  <div class="tablewrap"><div id="fulltable"></div></div>
+  <p class="note">集約 output throughput(サーバ全体)の conc=8 では、自然文は num=3 が最大(num=1 比 +7%)、コードは num=2 が最大(num=3 は num=1 比 +4%)。単発/低並行は num=3、高並行スループットも num=3 が概ね最良。num=2 は中並行で谷になる。</p>
+
+  <div class="foot">
+    ハーネス: <code>vllm bench serve</code>(サーバと同じイメージに同梱)。全 run で failed=0。データセット: 自然文=講義解説プロンプト 30 問 / 短文=random 50 / コード=BigCodeBench 40。構成: <code>docker-compose.mtp{1,2,3}.yml</code>。生データ: <code>bench-datasets/results/mtp{1,2,3}__*.json</code>。
+  </div>
+</div>
+
+<script>
+const DATA = [{"mtp": 1, "wl": "code", "cc": 1, "tpot": 11.343999004899112, "tpot_p90": 11.656252164546302, "tpot_p99": 12.386842174070509, "decode_tps": 88.15233495420193, "out_tps": 86.42573598261231, "acc": 85.13959504058514, "acclen": 1.8513959504058515, "completed": 40, "failed": 0}, {"mtp": 1, "wl": "code", "cc": 4, "tpot": 18.751725044038597, "tpot_p90": 19.623151289617166, "tpot_p99": 20.31619196084926, "decode_tps": 53.328426992796174, "out_tps": 206.7659877565095, "acc": 86.13410972613957, "acclen": 1.8613410972613957, "completed": 40, "failed": 0}, {"mtp": 1, "wl": "code", "cc": 8, "tpot": 25.215082359055987, "tpot_p90": 26.249990776127, "tpot_p99": 26.524262409576366, "decode_tps": 39.658803638245914, "out_tps": 307.5003310778463, "acc": 86.04164772210603, "acclen": 1.8604164772210603, "completed": 40, "failed": 0}, {"mtp": 1, "wl": "ja", "cc": 1, "tpot": 11.485724758339495, "tpot_p90": 11.626616465757053, "tpot_p99": 11.758451830382038, "decode_tps": 87.06459723178767, "out_tps": 86.20710133714343, "acc": 82.21113881961763, "acclen": 1.8221113881961761, "completed": 30, "failed": 0}, {"mtp": 1, "wl": "ja", "cc": 4, "tpot": 18.1275850537583, "tpot_p90": 18.700274284311647, "tpot_p99": 18.81283268751212, "decode_tps": 55.164546023888335, "out_tps": 208.7274212104821, "acc": 83.54066985645933, "acclen": 1.8354066985645932, "completed": 30, "failed": 0}, {"mtp": 1, "wl": "ja", "cc": 8, "tpot": 24.14156373582485, "tpot_p90": 24.982070882994694, "tpot_p99": 25.651425949911587, "decode_tps": 41.42233746507692, "out_tps": 304.7078885657304, "acc": 82.75369223439733, "acclen": 1.8275369223439735, "completed": 30, "failed": 0}, {"mtp": 1, "wl": "short", "cc": 1, "tpot": 11.53930477300657, "tpot_p90": 12.253126951113138, "tpot_p99": 13.478511621651133, "decode_tps": 86.66033350113601, "out_tps": 84.33915304561741, "acc": 79.43665880394062, "acclen": 1.7943665880394062, "completed": 50, "failed": 0}, {"mtp": 1, "wl": "short", "cc": 4, "tpot": 19.178601523470356, "tpot_p90": 21.27339981526862, "tpot_p99": 23.413976388158723, "decode_tps": 52.141445181820046, "out_tps": 197.07245210546918, "acc": 80.28571428571428, "acclen": 1.802857142857143, "completed": 50, "failed": 0}, {"mtp": 1, "wl": "short", "cc": 8, "tpot": 25.613006470629713, "tpot_p90": 27.03499157101767, "tpot_p99": 28.357093518757292, "decode_tps": 39.042663778916165, "out_tps": 288.4110589486759, "acc": 81.22154514253694, "acclen": 1.8122154514253694, "completed": 50, "failed": 0}, {"mtp": 2, "wl": "code", "cc": 1, "tpot": 10.016317785671529, "tpot_p90": 10.718922375736907, "tpot_p99": 11.794958087660548, "decode_tps": 99.83708797962788, "out_tps": 96.00450091722806, "acc": 76.0471045283477, "acclen": 2.5209420905669537, "completed": 40, "failed": 0}, {"mtp": 2, "wl": "code", "cc": 4, "tpot": 20.81563202246209, "tpot_p90": 21.64658475027068, "tpot_p99": 22.634367133756605, "decode_tps": 48.0408185022152, "out_tps": 188.4235271499836, "acc": 75.44418576154884, "acclen": 2.5088837152309766, "completed": 40, "failed": 0}, {"mtp": 2, "wl": "code", "cc": 8, "tpot": 22.89439806552447, "tpot_p90": 24.365417547594603, "tpot_p99": 25.390560746202272, "decode_tps": 43.67880724087916, "out_tps": 335.09695765337034, "acc": 76.25477864101615, "acclen": 2.525095572820323, "completed": 40, "failed": 0}, {"mtp": 2, "wl": "ja", "cc": 1, "tpot": 10.341599602762559, "tpot_p90": 10.735864486087864, "tpot_p99": 10.876512616221682, "decode_tps": 96.69683979380417, "out_tps": 94.53734734322124, "acc": 72.27620261229691, "acclen": 2.445524052245938, "completed": 30, "failed": 0}, {"mtp": 2, "wl": "ja", "cc": 4, "tpot": 20.288189736806828, "tpot_p90": 21.17952654013363, "tpot_p99": 21.611098820447726, "decode_tps": 49.28975985401991, "out_tps": 189.3614750436119, "acc": 72.38960624900366, "acclen": 2.447792124980073, "completed": 30, "failed": 0}, {"mtp": 2, "wl": "ja", "cc": 8, "tpot": 22.35845620444349, "tpot_p90": 23.59292545033949, "tpot_p99": 26.877566939912402, "decode_tps": 44.72580713337719, "out_tps": 306.515208481528, "acc": 70.40313894445299, "acclen": 2.40806277888906, "completed": 30, "failed": 0}, {"mtp": 2, "wl": "short", "cc": 1, "tpot": 10.448810772994468, "tpot_p90": 11.75227714042952, "tpot_p99": 13.654006981917831, "decode_tps": 95.70467125163712, "out_tps": 91.35594495807648, "acc": 68.67094408799267, "acclen": 2.3734188817598536, "completed": 50, "failed": 0}, {"mtp": 2, "wl": "short", "cc": 4, "tpot": 20.450681584104423, "tpot_p90": 22.443888295127934, "tpot_p99": 24.84897649120685, "decode_tps": 48.89812576111223, "out_tps": 188.12034030793217, "acc": 71.50726564725994, "acclen": 2.430145312945199, "completed": 50, "failed": 0}, {"mtp": 2, "wl": "short", "cc": 8, "tpot": 23.593044800386778, "tpot_p90": 25.582769997529557, "tpot_p99": 27.213517863211383, "decode_tps": 42.38537282748712, "out_tps": 316.7286122811858, "acc": 70.88529856387, "acclen": 2.4177059712773996, "completed": 50, "failed": 0}, {"mtp": 3, "wl": "code", "cc": 1, "tpot": 9.918203047948749, "tpot_p90": 10.482518528059577, "tpot_p99": 10.792768371810658, "decode_tps": 100.82471544145457, "out_tps": 98.22161329033136, "acc": 67.4687530754847, "acclen": 3.0240625922645408, "completed": 40, "failed": 0}, {"mtp": 3, "wl": "code", "cc": 4, "tpot": 16.13892376133097, "tpot_p90": 17.849052901181107, "tpot_p99": 18.308580759814767, "decode_tps": 61.96200036560123, "out_tps": 235.7795274761297, "acc": 67.81694312796208, "acclen": 3.034508293838863, "completed": 40, "failed": 0}, {"mtp": 3, "wl": "code", "cc": 8, "tpot": 23.10085406450832, "tpot_p90": 25.67583464852438, "tpot_p99": 27.724651991686542, "decode_tps": 43.28844280854445, "out_tps": 320.8854520533932, "acc": 67.41899001819344, "acclen": 3.0225697005458034, "completed": 40, "failed": 0}, {"mtp": 3, "wl": "ja", "cc": 1, "tpot": 10.245233753453684, "tpot_p90": 10.943185500976028, "tpot_p99": 12.693271696903114, "decode_tps": 97.60636253544712, "out_tps": 93.93977662187078, "acc": 61.65605095541401, "acclen": 2.8496815286624204, "completed": 30, "failed": 0}, {"mtp": 3, "wl": "ja", "cc": 4, "tpot": 16.37324651269472, "tpot_p90": 17.661729114393953, "tpot_p99": 18.038621021974823, "decode_tps": 61.075242422122386, "out_tps": 225.2188982683818, "acc": 62.595653504744405, "acclen": 2.8778696051423323, "completed": 30, "failed": 0}, {"mtp": 3, "wl": "ja", "cc": 8, "tpot": 22.741548351202173, "tpot_p90": 23.873859963201195, "tpot_p99": 25.473499124659654, "decode_tps": 43.972379741115454, "out_tps": 325.80021745685195, "acc": 61.87643304207722, "acclen": 2.8562929912623165, "completed": 30, "failed": 0}, {"mtp": 3, "wl": "short", "cc": 1, "tpot": 10.14191905376474, "tpot_p90": 11.591093707248778, "tpot_p99": 13.72469425893643, "decode_tps": 98.6006686405956, "out_tps": 93.85344028429442, "acc": 61.15485564304461, "acclen": 2.834645669291339, "completed": 50, "failed": 0}, {"mtp": 3, "wl": "short", "cc": 4, "tpot": 16.945103188856358, "tpot_p90": 19.591982957338388, "tpot_p99": 21.184180191895283, "decode_tps": 59.01409916804945, "out_tps": 221.63718121725512, "acc": 59.23274397078497, "acclen": 2.776982319123549, "completed": 50, "failed": 0}, {"mtp": 3, "wl": "short", "cc": 8, "tpot": 24.59122246085054, "tpot_p90": 26.312615220977627, "tpot_p99": 35.38528952557353, "decode_tps": 40.664916174541936, "out_tps": 306.7847031789818, "acc": 61.11602861990115, "acclen": 2.833480858597035, "completed": 50, "failed": 0}];
+const WL=["ja","short","code"], WLN={ja:"自然文",short:"短文",code:"コード"};
+const MTPS=[1,2,3], COL={1:"var(--s1)",2:"var(--s2)",3:"var(--s3)"};
+function get(mtp,wl,cc,k){const r=DATA.find(d=>d.mtp==mtp&&d.wl==wl&&d.cc==cc);return r?r[k]:null;}
+
+// grouped bar chart: groups = workloads, bars = num=1/2/3
+function groupedBar(elId, cc, key, fmt, unit){
+  const W=620,H=250, mL=44,mR=14,mT=14,mB=42;
+  const iw=W-mL-mR, ih=H-mT-mB;
+  let max=0;
+  WL.forEach(wl=>MTPS.forEach(m=>{const v=get(m,wl,cc,key); if(v>max)max=v;}));
+  max=Math.ceil(max/ (key==='acc'?20:20))*(key==='acc'?20:20);
+  const gw=iw/WL.length, bw=Math.min(46,(gw-24)/3);
+  const y=v=>ih-(v/max)*ih;
+  let s=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="grouped bar">`;
+  // gridlines
+  const ticks=key==='acc'?[0,20,40,60,80,100]:[0,20,40,60,80,100];
+  const tv=[]; for(let t=0;t<=max;t+=(max/5)) tv.push(Math.round(t));
+  tv.forEach(t=>{const yy=mT+y(t);s+=`<line class="axis" x1="${mL}" y1="${yy}" x2="${W-mR}" y2="${yy}"/><text class="tick" x="${mL-6}" y="${yy+3}" text-anchor="end">${t}</text>`;});
+  WL.forEach((wl,gi)=>{
+    const gx=mL+gi*gw;
+    MTPS.forEach((m,bi)=>{
+      const v=get(m,wl,cc,key);
+      const x=gx+(gw-3*bw-2*4)/2 + bi*(bw+4);
+      const yy=mT+y(v), hh=ih-y(v);
+      s+=`<rect x="${x.toFixed(1)}" y="${yy.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0,hh).toFixed(1)}" rx="3" fill="${COL[m]}"><title>num=${m} ${WLN[wl]} conc=${cc}: ${fmt(v)}${unit}</title></rect>`;
+      s+=`<text class="barval" x="${(x+bw/2).toFixed(1)}" y="${(yy-4).toFixed(1)}" text-anchor="middle">${fmt(v)}</text>`;
+    });
+    s+=`<text class="glabel" x="${(gx+gw/2).toFixed(1)}" y="${H-mB+22}" text-anchor="middle">${WLN[wl]}</text>`;
+  });
+  s+=`<line class="zeroline" x1="${mL}" y1="${mT+ih}" x2="${W-mR}" y2="${mT+ih}"/>`;
+  s+=`</svg>`;
+  document.getElementById(elId).innerHTML=s;
+}
+const f1=v=>v.toFixed(1);
+groupedBar("c_single",1,"decode_tps",f1,"");
+groupedBar("c_c4",4,"decode_tps",f1,"");
+groupedBar("c_c8",8,"decode_tps",f1,"");
+groupedBar("c_acc",1,"acc",f1,"%");
+
+// full table
+(function(){
+  let h=`<table><thead><tr><th>ワークロード</th><th>conc</th><th>num=1</th><th>num=2</th><th>num=3</th><th>2 vs 1</th><th>3 vs 1</th></tr></thead><tbody>`;
+  WL.forEach(wl=>{ [1,4,8].forEach(cc=>{
+    const v1=get(1,wl,cc,"decode_tps"),v2=get(2,wl,cc,"decode_tps"),v3=get(3,wl,cc,"decode_tps");
+    const d2=(v2/v1-1)*100, d3=(v3/v1-1)*100;
+    const cls=x=>x>=0?"pos":"neg"; const p=x=>(x>=0?"+":"")+x.toFixed(0)+"%";
+    h+=`<tr><td>${WLN[wl]}</td><td>${cc}</td><td>${v1.toFixed(1)}</td><td>${v2.toFixed(1)}</td><td>${v3.toFixed(1)}</td><td class="${cls(d2)}">${p(d2)}</td><td class="${cls(d3)}">${p(d3)}</td></tr>`;
+  });});
+  h+=`</tbody></table>`;
+  document.getElementById("fulltable").innerHTML=h;
+})();
+</script>

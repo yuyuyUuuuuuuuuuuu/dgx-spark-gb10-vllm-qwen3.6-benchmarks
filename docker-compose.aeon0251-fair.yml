@@ -1,0 +1,72 @@
+services:
+  vllm-aeon0251-fair:
+    # aeon イメージ v0.25.1 の公平比較用(結果ラベル aeon0251fair)。ホストのポート 8000 を使うので、
+    # 他のサーバを止めてから単独で起動する。ベースライン(0.23.0)の env/フラグを移植した版。
+    #
+    # docker-compose.aeon0251-test.yml から是正した点(vLLM ソースで確認):
+    #   - VLLM_MARLIN_USE_ATOMIC_ADD=1  → 戻す(0.25.1 でも有効。この checkpoint の MoE は Marlin が選ばれるので効く。ベースラインで +2%)
+    #   - VLLM_NVFP4_GEMM_BACKEND=...   → 入れない(0.25.1 で削除済み。この checkpoint では元々 no-op: NVFP4 は MoE のみ、linear は FP8)
+    #   - ENABLE_NVFP4_SM100=0          → 入れない(vLLM が読まない。イメージ既定に含まれる)
+    #   - NVIDIA_FORWARD_COMPAT=1       → 残す(vLLM 層には影響しないがコストも無い。driver 層への影響は未検証)
+    #   - --attention-backend=flashinfer / --enable-auto-tool-choice / --tool-call-parser → 戻す(条件を揃えるため)
+    #   - --linear-backend=flashinfer_cutlass は入れない(イメージ作者の注意書き: per-input global scale の無い checkpoint で crash する)
+    image: ghcr.io/aeon-7/aeon-vllm-ultimate:2026-07-16-v0.25.1
+    container_name: vllm-aeon0251-fair
+    entrypoint: ["vllm"]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - VLLM_USAGE_SOURCE=production
+      - VLLM_NO_USAGE_STATS=1
+      - DO_NOT_TRACK=1
+      - RAY_USAGE_STATS_ENABLED=0
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - TORCH_CUDA_ARCH_LIST=12.1a
+      # 0.25.1 で削除済み(no-op)のため移植しない: ENABLE_NVFP4_SM100 / VLLM_NVFP4_GEMM_BACKEND
+      # aeon0251-test との実質的な差はこれ。0.25.1 でも有効(envs.py + marlin_utils.py)。ベースラインで +2%(47.3->48.3)。
+      - VLLM_MARLIN_USE_ATOMIC_ADD=1
+      - NVIDIA_FORWARD_COMPAT=1
+      - CUTE_DSL_ARCH=sm_121a
+      - FLASHINFER_DISABLE_VERSION_CHECK=1
+      - MAX_JOBS=1
+      - FLASHINFER_JIT_MAX_PARALLEL_COMPILE=1
+      - HF_HOME=/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ${HF_CACHE_DIR:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ${MODELS_DIR:-~/models}:/models
+      - ./.cache/flashinfer-aeon0251:/root/.cache/flashinfer
+      - ./.cache/vllm-aeon0251:/root/.cache/vllm
+    ports:
+      - "127.0.0.1:8000:8000"
+    ipc: host
+    ulimits:
+      memlock: {soft: -1, hard: -1}
+    command:
+      - serve
+      - nvidia/Qwen3.6-35B-A3B-NVFP4
+      - --served-model-name=Qwen/Qwen3.6-35B-A3B
+      - --tensor-parallel-size=1
+      - --max-model-len=262144
+      - --max-num-seqs=8
+      - --gpu-memory-utilization=0.44
+      - --max-num-batched-tokens=8192
+      - --trust-remote-code
+      - --host=0.0.0.0
+      - --port=8000
+      - --dtype=auto
+      - --kv-cache-dtype=fp8
+      - --attention-backend=flashinfer
+      - --enable-chunked-prefill
+      - --enable-prefix-caching
+      - --async-scheduling
+      - --reasoning-parser=qwen3
+      - --enable-auto-tool-choice
+      - --tool-call-parser=qwen3_coder
+      - --speculative-config={"method":"mtp","num_speculative_tokens":3,"moe_backend":"triton"}
+    restart: "no"

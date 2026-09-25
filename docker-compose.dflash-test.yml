@@ -1,0 +1,52 @@
+services:
+  vllm-dflash:
+    # aeon イメージ v0.25.1 + DFlash の比較用(結果ラベル dflash)。drafter は zan/Qwen3.6-35B-A3B-DFlash-ja を
+    # ${MODELS_DIR}/Qwen3.6-35B-A3B-DFlash-ja に置いたもの。ホストのポート 8000 を使う。
+    # レシピ: イメージ作者(AEON-7)の 35B-A3B 向け(method:dflash, num_spec=11, KV は BF16 必須, 非因果に対応した flash_attn)
+    image: ghcr.io/aeon-7/aeon-vllm-ultimate:2026-07-16-v0.25.1
+    container_name: vllm-dflash-test
+    entrypoint: ["vllm"]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - VLLM_NO_USAGE_STATS=1
+      - DO_NOT_TRACK=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - TORCH_CUDA_ARCH_LIST=12.1a
+      - CUTE_DSL_ARCH=sm_121a
+      - FLASHINFER_DISABLE_VERSION_CHECK=1
+      - HF_HOME=/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    volumes:
+      - ${HF_CACHE_DIR:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ${MODELS_DIR:-~/models}:/models
+      - ./.cache/flashinfer-dflash:/root/.cache/flashinfer
+      - ./.cache/vllm-dflash:/root/.cache/vllm
+    ports:
+      - "127.0.0.1:8000:8000"
+    ipc: host
+    ulimits:
+      memlock: {soft: -1, hard: -1}
+    command:
+      - serve
+      - nvidia/Qwen3.6-35B-A3B-NVFP4
+      - --served-model-name=Qwen/Qwen3.6-35B-A3B
+      - --tensor-parallel-size=1
+      - --max-model-len=131072          # BF16 KV は容量を食うのでベースラインの 262144 から半減
+      - --max-num-seqs=8
+      - --gpu-memory-utilization=0.50    # BF16 KV のためベースライン(0.44)より少し多め
+      - --max-num-batched-tokens=32768
+      - --trust-remote-code
+      - --host=0.0.0.0
+      - --port=8000
+      - --dtype=auto
+      - --kv-cache-dtype=auto            # DFlash drafter は非因果なので BF16 KV が必須(fp8 不可)
+      - --attention-backend=flash_attn   # 非因果 attention に対応したバックエンド
+      - --enable-chunked-prefill
+      - --enable-prefix-caching
+      - --async-scheduling
+      - --reasoning-parser=qwen3
+      - --speculative-config={"method":"dflash","model":"/models/Qwen3.6-35B-A3B-DFlash-ja","num_speculative_tokens":11}
+    restart: "no"

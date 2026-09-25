@@ -1,0 +1,108 @@
+services:
+  vllm-dflash-fixed:
+    # ============================================================================
+    # DFlash page_size クラッシュ修正版(パッチ v1)
+    # ----------------------------------------------------------------------------
+    # 目的: コミュニティ投稿(NeoAi)の単発 286 tok/s を GB10(sm121a)で再現・計測する
+    #       ための「起動が通る」構成。外部 z-lab DFlash drafter を hybrid target
+    #       (Qwen3_5MoeForConditionalGeneration = GDN/mamba + full-attn) に載せる。
+    # 結果: v1 パッチでは起動しなかった。理由の分析と対策は patches/patch-dflash-pagesize-v2.sh の冒頭。
+    #
+    # 【原因(vLLM / イメージのソースから)】
+    #   起動時 vllm/v1/core/kv_cache_utils.py の unify_kv_cache_spec_page_size で
+    #     assert new_spec.page_size_bytes == max_page_size   → AssertionError。
+    #   ・target の full-attn は mamba(GDN)state page に合わせるため attention
+    #     block を 1136 に強制 → target attn page = 1136*2*2*256*2 = 2,326,528 B。
+    #   ・drafter(z-lab)は SWA(sliding_window=4096)。head_dim=128 / kv_heads=8 /
+    #     block=16 → page = 16*2*8*128*2 = 65,536 B。
+    #   ・2,326,528 / 65,536 = 35.5(非整数)→ block_size を整数倍しても揃わない。
+    #     揃わない時 unify は「page_size_padded で物理pad」する回避パスを持つが、
+    #     それは spec.indexes_kv_by_block_stride==True の時だけ有効。
+    #   ・ところが AEONイメージの DFlash loader(qwen3_dflash.py)は drafter の
+    #     SlidingWindowSpec を FullAttentionSpec に作り替える際、
+    #     indexes_kv_by_block_stride を "コピーし忘れて" default False にしている。
+    #     → pad パスに入れず NotImplementedError/AssertionError で墜落。
+    #   これは v0.24.0 と v0.25.1 の両イメージに存在するイメージ側のバグ。
+    #   なお block_size を下げて割り切れさせる手は使えない: この hybrid(mamba fp32)では
+    #     flash_attn の許容 kernel block は [16,32,64] のみ。8 は使えず 16 が最小=
+    #     65,536 が固定 → 常に 35.5。よって pad パス(=このパッチ)が唯一の道。
+    #   MTP(ベースライン)が動く理由: MTP は target 内蔵の自己投機ヘッドで、target と
+    #     同一 head geometry / block を使う → page が定義上一致し unify 不要。
+    #     外部 drafter だけが別 geometry を持ち込むので不整合になる。
+    #
+    # 【修正】
+    #   起動前に patches/patch-dflash-pagesize.sh を実行し、drafter の SWA->Full 変換に
+    #   indexes_kv_by_block_stride=True を1行足す。flash_attn/flashinfer/triton の
+    #   layered stride order は num-blocks-first(stride[0]!=0)なので True が正。
+    #   これで unify は drafter page を 2,326,528 へ物理pad(論理block16は不変)して
+    #   起動が通る、という想定だった(実際は drafter の本物の full-attention 層が残り落ちた。v2 参照)。
+    #   パッチは冪等・構文検証つき・イメージ無改変(mount実行のみ)。
+    #
+    # 公式(aeon_official_compose.yml)から変えたのは body/drafter/util/port と
+    #   このパッチ実行の 5 点のみ。spec に attention_backend は入れない(drafter DEFAULT=
+    #   flash_attn / BF16 KV)、--kv-cache-dtype も設定しない(非因果 drafter は BF16 KV)。
+    # ============================================================================
+    image: ghcr.io/aeon-7/aeon-vllm-ultimate:2026-07-01-v0.24.0   # 投稿と同じ v0.24.0
+    container_name: vllm-dflash-fixed
+    entrypoint: ["/bin/bash", "-lc"]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - VLLM_NO_USAGE_STATS=1
+      - DO_NOT_TRACK=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - TORCH_CUDA_ARCH_LIST=12.1a
+      - CUTE_DSL_ARCH=sm_121a
+      - FLASHINFER_DISABLE_VERSION_CHECK=1
+      - HF_HOME=/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    volumes:
+      - ${HF_CACHE_DIR:-~/.cache/huggingface}:/root/.cache/huggingface   # nvidia 公式 NVFP4 body は HF キャッシュから
+      - ${MODELS_DIR:-~/models}:/models
+      - ${MODELS_DIR:-~/models}/Qwen3.6-35B-A3B-DFlash-zlab:/drafter:ro   # z-lab drafter(771MB)
+      - ./patches/patch-dflash-pagesize.sh:/patch/patch-dflash-pagesize.sh:ro  # 起動前パッチ
+      - ./.cache/flashinfer-dflash-fixed:/root/.cache/flashinfer
+      - ./.cache/vllm-dflash-fixed:/root/.cache/vllm
+    ports:
+      - "127.0.0.1:8001:8000"   # 8001。8000 のサーバと衝突しないように
+    ipc: host
+    ulimits:
+      memlock: {soft: -1, hard: -1}
+    command:
+      - |
+        set -e
+        bash /patch/patch-dflash-pagesize.sh
+        exec vllm serve nvidia/Qwen3.6-35B-A3B-NVFP4 \
+          --served-model-name=Qwen/Qwen3.6-35B-A3B \
+          --tensor-parallel-size=1 \
+          --dtype=auto \
+          --quantization=compressed-tensors \
+          --max-model-len=262144 \
+          --max-num-seqs=64 \
+          --max-num-batched-tokens=32768 \
+          --gpu-memory-utilization=0.44 \
+          --enable-chunked-prefill \
+          --enable-prefix-caching \
+          --load-format=safetensors \
+          --trust-remote-code \
+          --enable-auto-tool-choice \
+          --tool-call-parser=qwen3_coder \
+          --reasoning-parser=qwen3 \
+          --host=0.0.0.0 \
+          --port=8000 \
+          --attention-backend=flash_attn \
+          --speculative-config='{"method":"dflash","model":"/drafter","num_speculative_tokens":11}'
+        # ---- フォールバック(初回で落ちた場合の順序) ------------------------------
+        #  A) それでも unify で落ちる(pad パスに入らない)場合:
+        #       → drafter の attention backend を明示すると spec 構築経路が変わる。
+        #         --speculative-config に "attention_backend":"flash_attn" を足して再試行。
+        #         (公式は「入れるな」だが、page_size 問題の切り分けには有効)
+        #  B) profile_cudagraph_memory 経路だけを避けたいなら --enforce-eager を足す。
+        #       ただしこの assert は実際の KV 構築(get_kv_cache_configs)でも再発するので、
+        #       enforce-eager 単独では根治しない(パッチが本命)。速度は ~30% 落ちる。
+        #  C) body(nvidia 公式 NVFP4)が compressed-tensors でロード不可なら
+        #       --quantization=compressed-tensors を外して auto。
+        # ---------------------------------------------------------------------------
+    restart: "no"
