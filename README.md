@@ -1,4 +1,6 @@
-# dgx-spark-vllm-notes
+# Qwen3.6-35B-A3B on NVIDIA DGX Spark (GB10) with vLLM: benchmarks and notes
+
+*English summary: measured on one DGX Spark (GB10, sm_121, TP=1): FP8 vs NVFP4, MTP and DFlash speculative decoding, Marlin vs FlashInfer NVFP4 MoE kernels, vLLM 0.23.0 vs 0.25.1, enabling thinking, and a DFlash startup assert on hybrid (GDN + full-attention) targets. The notes below are in Japanese.*
 
 NVIDIA DGX Spark(GB10, sm_121)上で vLLM により **Qwen3.6-35B-A3B** を動かしたときの計測ノートと道具です。
 単一ユーザ・単一ノード(TP=1)の推論を前提に、次の問いを実測で確かめています。
