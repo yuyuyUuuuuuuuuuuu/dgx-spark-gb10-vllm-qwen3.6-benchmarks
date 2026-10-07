@@ -4,6 +4,13 @@
 
 DGX Spark(GB10)の vLLM ベンチマーク。結論の例: NVFP4 は FP8 より速く 13GiB 軽い(MTP num=3 で FP8 37-40 t/s → NVFP4 ~63 t/s)。MTP は `--async-scheduling` ありで num=3 が最速(単発 98〜101 tok/s)。MoE カーネルを b12x にしても Marlin 比 +2.8% に留まる。
 
+| finding (one DGX Spark / GB10, TP=1, vLLM) | number |
+|---|---|
+| NVFP4 vs FP8, same prompt, MTP num=3 | FP8 37-40 tok/s -> NVFP4 ~63 tok/s (about 1.6x); weights 35.0 GiB -> 21.9 GiB |
+| MTP `num_speculative_tokens` | with `--async-scheduling`, num=3 is fastest: single stream 98-101 tok/s (+12-16% vs num=1); acceptance about 83/72/63% for num=1/2/3 |
+| NVFP4 MoE kernel | Marlin 75.3 -> FlashInfer b12x 77.4 tok/s (+2.8%), matched A/B without MTP |
+| scope | all numbers are from one GB10; not directly comparable with other hardware |
+
 NVIDIA DGX Spark(GB10, sm_121)上で vLLM により **Qwen3.6-35B-A3B** を動かしたときの計測ノートと道具です。
 単一ユーザ・単一ノード(TP=1)の推論を前提に、次の問いを実測で確かめています。
 

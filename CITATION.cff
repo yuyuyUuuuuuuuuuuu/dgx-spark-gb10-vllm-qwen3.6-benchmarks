@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use these measurements or compose files, please cite this repository."
+title: "Qwen3.6-35B-A3B on NVIDIA DGX Spark (GB10) with vLLM: benchmarks and notes"
+type: software
+authors:
+  - alias: "yuyuyUuuuuuuuuuuu"
+repository-code: "https://github.com/yuyuyUuuuuuuuuuuu/dgx-spark-gb10-vllm-qwen3.6-benchmarks"
+license: MIT
+date-released: "2026-09-25"
+abstract: "Benchmarks and compose files for Qwen3.6-35B-A3B on one NVIDIA DGX Spark (GB10, sm_121) with vLLM: FP8 vs NVFP4, MTP and DFlash speculative decoding, Marlin vs FlashInfer b12x MoE kernels, vLLM 0.23 vs 0.25. Notes are in Japanese with an English summary."
+keywords: [Qwen3.6-35B-A3B, DGX Spark, GB10, vLLM, NVFP4, FP8, MTP, DFlash, benchmark]
